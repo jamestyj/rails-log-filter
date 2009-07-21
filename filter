@@ -1,0 +1,182 @@
+#!/usr/bin/ruby
+require 'optparse'
+
+class RailsLogFilter
+
+  def initialize
+    parse_options
+    run
+  end
+
+
+  private
+
+  def parse_options
+    @opts = {}
+    begin
+      OptionParser.new do |opts|
+        opts.banner = 
+          "Usage: #{File.basename(__FILE__)} [OPTION]... LOG_FILE\n" +
+          "Search for PATTERN in the specified Rails log (LOG_FILE).\n" +
+          "PATTERN is, by default, a Ruby regular expression.\n\n" +
+          "Example: filter start_build production.log\n" +
+          "         filter -r BuildController#kiwi_export -p token production.log.bz2\n" +
+          "\nQuery options:"
+
+        opts.on('-n', '--namespace=NAMESPACE', 'Controller namespace to search for.') do |v|
+          @opts[:namespace] = v
+        end
+
+        opts.on('-c', '--controller=CONTROLLER_NAME', 'Controller name to search for.') do |v|
+          @opts[:controller] = v
+        end
+
+        opts.on('-a', '--action=ACTION_NAME', 'Action name to search for.') do |v|
+          @opts[:action] = v
+        end
+
+        opts.on('-r', '--request=REQUEST_NAME', 'Request name to search for. This is includes',
+                'the namespace, controller name, and action name.') do |v|
+          @opts[:request] = v
+        end
+
+        opts.on('-p', '--pattern=PATTERN', 'Pattern / regular expresion to search for.') do |v|
+          @opts[:pattern] = v
+        end
+
+        opts.separator "\nOther options:" 
+
+        @opts[:stats] = true
+        opts.on('-q', '--no-stats', 'Do not display statistics.') do |v|
+          @opts[:stats] = v
+        end
+
+        opts.on('--no-color', 'Do not colorize output.') do |v|
+          @opts[:colorize] = v
+        end
+
+      end.parse!
+    rescue OptionParser::InvalidOption => exception
+      die 'Invalid option', exception
+    rescue OptionParser::MissingArgument => exception
+      die 'Missing argument for option', exception
+    end
+
+    die if ARGV.size < 1
+  end
+
+  # Displays program usage. If 'message' is given, it displays an error message
+  # and tries to get the command line option.
+  def die message = '', exception = nil
+    unless message.empty?
+      option = ''
+      unless exception.nil?
+        option = " '#{exception.message.split(':')[1].strip}'"
+      end
+      puts "\n** Error: #{message}#{option}.\n\n"
+    end
+    puts `#{__FILE__} --help`
+    exit
+  end
+
+  def delimit number, delimiter = ','
+    number.to_s.reverse.gsub(%r{([0-9]{3}(?=([0-9])))}, "\\1#{delimiter}").reverse
+  end
+
+  def run
+    input_file = ARGV[0]
+
+    # form the request
+    if @opts[:request].nil?
+      [ :namespace, :controller, :action ].each do |p|
+        @opts[:request] += @opts[p] if @opts[p]
+      end
+    end
+
+    if @opts[:request].nil? and @opts[:pattern].nil?
+      die
+    end
+
+    # use bzcat if it's a .bz2
+    cat_command = "cat #{input_file}"
+    extension = File.extname input_file
+    if extension == '.bz2'
+     cat_command = 'bz' + cat_command
+    end
+
+    begin
+      if @opts[:request].nil?
+        grep_without_request_filter cat_command
+      else
+        grep_with_request_filter cat_command
+      end
+    rescue Interrupt
+      puts "Interrupt caught, aborting!"
+      exit
+    end
+  end
+
+  def grep_without_request_filter cat_command
+    request_log = ''
+    in_request = false
+    skipped_requests = 0
+
+    f = IO.popen cat_command
+    while line = f.gets
+      if line =~ /^Processing /
+        unless request_log.empty?
+          if @opts[:pattern].nil? or request_log.include? @opts[:pattern]
+            if skipped_requests > 0
+              puts "skipped #{delimit skipped_requests} requests...\n\n" 
+            end
+            skipped_requests = 0
+
+            request_log.gsub! @opts[:pattern], "\e[0;31;1m#{@opts[:pattern]}\e[0m"
+            puts request_log.chomp
+          else
+            skipped_requests += 1
+          end
+        end
+        request_log = line
+      else
+        request_log << line
+      end
+    end
+    f.close
+  end
+
+  def grep_with_request_filter cat_command
+    request_log = ''
+    in_request = false
+
+    f = IO.popen cat_command
+    while line = f.gets
+      if line =~ /^Processing /
+        if line =~ /^Processing #{@opts[:request]} /
+          in_request = true
+          line.gsub! @opts[:request], "\e[0;33;1m#{@opts[:request]}\e[0m"
+          request_log << line
+        else
+          in_request = false
+        end
+
+      elsif in_request
+        request_log << line
+
+      else
+        unless request_log.empty?
+          if @opts[:pattern].nil? or request_log.include? @opts[:pattern]
+            request_log.gsub! @opts[:pattern], "\e[0;31;1m#{@opts[:pattern]}\e[0m"
+            puts request_log
+          end
+        end
+        request_log = ''
+      end
+    end
+    f.close
+  end
+
+end
+
+RailsLogFilter.new
+
