@@ -40,6 +40,12 @@ class RailsLogFilter
           @opts[:request] = v
         end
 
+        @opts[:exclude_requests] = []
+        opts.on('-e', '--exclude-request=REQUEST_NAME', 'Exclude request in results. This is includes',
+                'the namespace, controller name, and action name.') do |v|
+          @opts[:exclude_requests] << v
+        end
+
         opts.on('-p', '--pattern=PATTERN', 'Pattern / regular expresion to search for.') do |v|
           @opts[:pattern] = v
         end
@@ -116,6 +122,13 @@ class RailsLogFilter
     end
   end
 
+  def show_request? line
+    @opts[:exclude_requests].each do |request|
+      return false if line =~ /^Processing #{request} /
+    end
+    true
+  end
+
   def grep_without_request_filter cat_command
     request_log = ''
     in_request = false
@@ -125,7 +138,8 @@ class RailsLogFilter
     while line = f.gets
       if line =~ /^Processing /
         unless request_log.empty?
-          if @opts[:pattern].nil? or request_log.include? @opts[:pattern]
+          if (@opts[:pattern].nil? or request_log.include? @opts[:pattern]) and
+              show_request?(request_log.split("\n").first)
             if skipped_requests > 0
               puts "skipped #{delimit skipped_requests} requests...\n\n" 
             end
